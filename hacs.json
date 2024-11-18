@@ -1,0 +1,8 @@
+{
+    "name": "SSCP Integration",
+    "content_in_root": false,
+    "country": "cz",
+    "domains": ["sscp_integration"],
+    "zip_release": false,
+    "filename": "custom_components/sscp_integration/manifest.json"
+  }
