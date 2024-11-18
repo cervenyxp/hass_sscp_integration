@@ -13,7 +13,7 @@ Tato integrace umožňuje připojení k SSCP protokolu pro PLC zařízení.
 3. Klikněte na "Instalovat".
 
 ### Ruční instalace
-1. Stáhněte si [nejnovější vydání](https://github.com/your_username/your_repository_name/releases/latest).
+1. Stáhněte si [nejnovější vydání](https://github.com/cervenyxp/hass_sscp_integration/releases/latest).
 2. Rozbalte obsah do složky `custom_components/your_integration_name`.
 
 ## Konfigurace
