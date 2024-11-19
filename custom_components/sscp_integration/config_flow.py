@@ -86,6 +86,10 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.config["name"] = selected_var  # Nastavíme název z `.vlist`
             return await self.async_step_hass_config()
 
+        # Inicializace vlist_data pro každý krok
+        global vlist_data
+        vlist_data = {}
+
         if not vlist_data:
             try:
                 lines = await self.hass.async_add_executor_job(read_vlist_file, self.config["vlist_file"])
@@ -377,6 +381,10 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
     
     async def async_step_add_entity_from_vlist(self, user_input=None):
         """Přidání nové entity výběrem ze souboru .vlist."""
+        """Reset vlist_data to empty"""
+        global vlist_data
+        vlist_data = {}
+
         if not vlist_data:
             try:
                 vlist_file = self.config_entry.data.get("vlist_file")
