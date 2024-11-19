@@ -8,9 +8,6 @@ from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-# Globální proměnná pro uložení dat ze souboru .vlist
-vlist_data = {}
-
 def read_vlist_file(vlist_file):
     """Přečte obsah souboru .vlist a vrátí seznam řádků."""
     _LOGGER.debug("Reading vlist file: %s", vlist_file)
@@ -18,6 +15,8 @@ def read_vlist_file(vlist_file):
         return f.readlines()
 
 class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    def __init__(self):
+        self.vlist_data = {}        
     async def async_step_user(self, user_input=None):
         """První krok - zadání základních údajů a konfigurace."""
         errors = {}
@@ -81,22 +80,20 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             selected_var = user_input["variable"]
-            var_data = vlist_data[selected_var]
+            var_data = self.vlist_data[selected_var]
             self.config.update(var_data)
             self.config["name"] = selected_var  # Nastavíme název z `.vlist`
             return await self.async_step_hass_config()
 
-        # Inicializace vlist_data pro každý krok
-        vlist_data = {}
-
-        if not vlist_data:
+        # Inicializace vlist_data pro každý krok        
+        if not self.vlist_data:
             try:
                 lines = await self.hass.async_add_executor_job(read_vlist_file, self.config["vlist_file"])
                 for idx, line in enumerate(lines[2:], start=3):  # Načítáme proměnné od třetího řádku
                     parts = line.strip().split(";")
                     if len(parts) >= 6:
                         name = parts[1].replace("$", "")  # Odstranění `$`
-                        vlist_data[name] = {
+                        self.vlist_data[name] = {
                             "project": parts[0],
                             "uid": int(parts[3]),
                             "type": parts[2].strip('$'),
@@ -109,7 +106,7 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("Failed to load vlist file: %s", e)
                 errors["base"] = "vlist_load_failed"
 
-        variable_options = list(vlist_data.keys())
+        variable_options = list(self.vlist_data.keys())
         if not variable_options:
             errors["base"] = "no_variables"
 
@@ -194,11 +191,12 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return SSCPOptionsFlow(config_entry)
 
 class SSCPOptionsFlow(config_entries.OptionsFlow):
-    """Nastavení možností pro SSCP integraci."""
-
+    """Nastavení možností pro SSCP integraci."""    
+           
     def __init__(self, config_entry):
         self.config_entry = config_entry
         self.selected_entity = None  # Pro uložení aktuálně vybrané entity
+        self.vlist_data = {} 
 
     async def async_step_init(self, user_input=None):
         """První krok při editaci nastavení."""
@@ -381,9 +379,8 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
     async def async_step_add_entity_from_vlist(self, user_input=None):
         """Přidání nové entity výběrem ze souboru .vlist."""
         """Reset vlist_data to empty"""
-        vlist_data = {}
 
-        if not vlist_data:
+        if not self.vlist_data:
             try:
                 vlist_file = self.config_entry.data.get("vlist_file")
                 if not vlist_file:
@@ -393,7 +390,7 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
                     parts = line.strip().split(";")
                     if len(parts) >= 6:
                         name = parts[1].replace("$", "")
-                        vlist_data[name] = {
+                        self.vlist_data[name] = {
                             "project": parts[0],
                             "uid": int(parts[3]),
                             "type": parts[2].strip('$'),
@@ -406,7 +403,7 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             selected_var = user_input["variable"]
-            var_data = vlist_data[selected_var]
+            var_data = self.vlist_data[selected_var]
             var_data["name"] = selected_var  # Nastavení názvu
             var_data["entity_type"] = user_input["entity_type"]  # Typ entity
             variables = self.config_entry.data.get("variables", [])
@@ -416,7 +413,7 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
             )
             return self.async_create_entry(title="", data={})
 
-        variable_options = list(vlist_data.keys())
+        variable_options = list(self.vlist_data.keys())
         if not variable_options:
             return self.async_abort(reason="no_variables")
 
