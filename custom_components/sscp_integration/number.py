@@ -31,6 +31,7 @@ class SSCPNumber(NumberEntity):
         self._length = config.get("length", 1)
         self._type = config["type"]
         self._name = config["name"]
+        self._unit = config.get("unit_of_measurement", None)  # Přidáno: jednotka měření
         self._state = None
         self._entry_id = entry_id
 

@@ -138,6 +138,21 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Konfigurace Home Assistant entit."""
         errors = {}
 
+        # Nejznámější fyzikální jednotky
+        known_units = [
+            "°C", "°F", "K",          # Teplota
+            "Pa", "kPa", "hPa", "bar", "psi",  # Tlak
+            "m/s", "km/h", "mph",     # Rychlost
+            "W", "kW", "MW",          # Výkon
+            "V", "mV",                # Napětí
+            "A", "mA",                # Proud
+            "Hz", "kHz",              # Frekvence
+            "%",                      # Relativní procenta (např. vlhkost)
+            "g", "kg", "t",           # Hmotnost
+            "m", "cm", "mm", "km",    # Délka
+            "l", "ml", "m³",          # Objem
+        ]
+
         if user_input is not None:
             self.config.update(user_input)
             try:
@@ -153,15 +168,21 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if "variables" not in self.config:
                     self.config["variables"] = []
 
-                # Přidání nové proměnné včetně entity_type
-                self.config["variables"].append({
+                # Přidání nové proměnné včetně entity_type a jednotky
+                variable = {
                     "uid": self.config["uid"],
                     "offset": self.config["offset"],
                     "length": self.config["length"],
                     "type": self.config["type"],
                     "name": self.config["name"],
-                    "entity_type": user_input["entity_type"],  # Přidání entity_type
-                })
+                    "entity_type": user_input["entity_type"],
+                }
+
+                # Přidání jednotky, pokud je relevantní
+                if user_input["entity_type"] not in ["switch", "binary_sensor"]:
+                    variable["unit_of_measurement"] = user_input.get("unit_of_measurement", None)
+
+                self.config["variables"].append(variable)
 
                 # Kontrola, zda má být konfigurace ukončena
                 if user_input.get("finish", False):
@@ -176,9 +197,20 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("Failed to read variable: %s", e)
                 errors["base"] = "read_failed"
 
+        # Základní schéma dat
         data_schema = vol.Schema({
             vol.Required("entity_type", default="sensor"): vol.In(["sensor", "binary_sensor", "switch", "number", "select"]),
             vol.Required("domain", default="generic"): str,
+        })
+
+        # Pokud není vybrán switch nebo binary_sensor, přidejte volbu jednotek
+        if user_input is None or user_input.get("entity_type", "sensor") not in ["switch", "binary_sensor"]:
+            data_schema = data_schema.extend({
+                vol.Optional("unit_of_measurement", default="°C"): vol.In(known_units),  # Výběr jednotek
+            })
+
+        # Přidání možnosti ukončení konfigurace
+        data_schema = data_schema.extend({
             vol.Optional("finish", default=False): bool,  # Zaškrtávátko pro ukončení
         })
 
@@ -264,6 +296,7 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
                 "length": user_input["length"],
                 "type": user_input["type"],
                 "entity_type": user_input["entity_type"],
+                "unit_of_measurement": user_input.get("unit_of_measurement"),  # Přidání jednotky
             })
 
             self.hass.config_entries.async_update_entry(
@@ -278,6 +311,9 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
             vol.Required("length", default=1): int,
             vol.Required("type", default="int"): str,
             vol.Required("entity_type", default="sensor"): vol.In(["sensor", "binary_sensor", "switch", "number", "select"]),
+            vol.Optional("unit_of_measurement", default=""): vol.In([
+                "", "°C", "°F", "Pa", "kPa", "bar", "m", "cm", "mm", "V", "mV", "A", "mA", "Hz", "W", "kW", "kWh", "%"
+            ]),
         })
 
         return self.async_show_form(step_id="add_entity", data_schema=data_schema)
@@ -308,6 +344,9 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
             vol.Optional("length", default=entity["length"]): int,
             vol.Optional("type", default=entity["type"]): str,
             vol.Optional("entity_type", default=entity["entity_type"]): vol.In(["sensor", "binary_sensor", "switch", "number", "select"]),
+            vol.Optional("unit_of_measurement", default=entity.get("unit_of_measurement", "")): vol.In([
+                "", "°C", "°F", "Pa", "kPa", "bar", "m", "cm", "mm", "V", "mV", "A", "mA", "Hz", "W", "kW", "kWh", "%"
+            ]),
         })
 
         return self.async_show_form(step_id="edit_entity", data_schema=data_schema)
