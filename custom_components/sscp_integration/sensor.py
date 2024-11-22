@@ -4,6 +4,27 @@ from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+# Mapování jednotek na device_class
+UNIT_DEVICE_CLASS_MAP = {
+    "°C": "temperature",
+    "°F": "temperature",
+    "Pa": "pressure",
+    "kPa": "pressure",
+    "bar": "pressure",
+    "m": "distance",
+    "cm": "distance",
+    "mm": "distance",
+    "V": "voltage",
+    "mV": "voltage",
+    "A": "current",
+    "mA": "current",
+    "Hz": "frequency",
+    "W": "power",
+    "kW": "power",
+    "kWh": "energy",
+    "%": "humidity",
+}
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Nastavení senzorů pro SSCP Integration."""
     _LOGGER.info("Setting up sensors for SSCP Integration")
@@ -31,7 +52,7 @@ class SSCPVariableSensor(Entity):
         self._length = config.get("length", 1)
         self._type = config["type"]
         self._name = config["name"]
-        self._unit = config.get("unit_of_measurement", None)  # Přidáno: jednotka měření
+        self._unit_of_measurement = config.get("unit_of_measurement", None)
         self._state = None
         self._entry_id = entry_id
 
@@ -49,6 +70,16 @@ class SSCPVariableSensor(Entity):
     def state(self):
         """Vrátí aktuální stav senzoru."""
         return self._state
+
+    @property
+    def unit_of_measurement(self):
+        """Vrátí jednotku měření."""
+        return self._unit_of_measurement
+
+    @property
+    def device_class(self):
+        """Vrátí typ senzoru podle jednotky měření."""
+        return UNIT_DEVICE_CLASS_MAP.get(self._unit_of_measurement)
 
     @property
     def device_info(self):
