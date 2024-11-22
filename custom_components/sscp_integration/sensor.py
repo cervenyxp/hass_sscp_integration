@@ -1,6 +1,5 @@
 import logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
-from homeassistant.const import UnitOfTemperature, UnitOfPressure, UnitOfLength, UnitOfVoltage, UnitOfEnergy, UnitOfPower
 from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
