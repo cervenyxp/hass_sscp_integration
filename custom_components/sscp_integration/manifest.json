@@ -1,7 +1,7 @@
 {
   "domain": "sscp_integration",
   "name": "Mervis/Domat SSCP Integration",
-  "version": "1.0.7",
+  "version": "1.0.9",
   "config_flow": true,
   "documentation": "https://www.example.com/documentation",
   "requirements": ["aiohttp"],
