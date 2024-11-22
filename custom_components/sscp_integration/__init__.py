@@ -3,6 +3,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
 from .sscp_client import SSCPClient
+from .const import DOMAIN
 
 DOMAIN = "sscp_integration"
 _LOGGER = logging.getLogger(__name__)

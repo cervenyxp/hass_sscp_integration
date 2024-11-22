@@ -1,10 +1,10 @@
 {
   "domain": "sscp_integration",
   "name": "Mervis/Domat SSCP Integration",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "config_flow": true,
   "documentation": "https://www.example.com/documentation",
-  "requirements": [],
+  "requirements": ["aiohttp"],
   "codeowners": ["@cervenyxp"],
   "iot_class": "local_polling",
   "icon": "icons/icon.png",

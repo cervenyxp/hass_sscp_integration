@@ -1,5 +1,6 @@
 import logging
-from homeassistant.helpers.entity import Entity
+from homeassistant.components.sensor import SensorEntity
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,11 +42,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     if sensors:
         async_add_entities(sensors, update_before_add=True)
 
-class SSCPVariableSensor(Entity):
+class SSCPVariableSensor(CoordinatorEntity, SensorEntity):
     """Reprezentace SSCP senzoru."""
 
     def __init__(self, client, config, entry_id):
         """Inicializace senzoru."""
+        super().__init__(client)
         self._client = client
         self._uid = config["uid"]
         self._offset = config.get("offset", 0)
@@ -53,6 +55,7 @@ class SSCPVariableSensor(Entity):
         self._type = config["type"]
         self._name = config["name"]
         self._unit_of_measurement = config.get("unit_of_measurement", None)
+        self._device_class = config.get("device_class", UNIT_DEVICE_CLASS_MAP.get(self._unit_of_measurement))
         self._state = None
         self._entry_id = entry_id
 
@@ -79,7 +82,7 @@ class SSCPVariableSensor(Entity):
     @property
     def device_class(self):
         """Vrátí typ senzoru podle jednotky měření."""
-        return UNIT_DEVICE_CLASS_MAP.get(self._unit_of_measurement)
+        return self._device_class
 
     @property
     def device_info(self):
@@ -97,7 +100,5 @@ class SSCPVariableSensor(Entity):
         try:
             value = self._client.read_variable(self._uid, self._offset, self._length, self._type)
             self._state = value
-            _LOGGER.info("Updated sensor %s with value: %s", self._name, value)
         except Exception as e:
             _LOGGER.error("Failed to update sensor %s: %s", self._name, e)
-            self._state = None
