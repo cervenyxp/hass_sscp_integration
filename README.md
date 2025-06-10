@@ -14,7 +14,10 @@ Tato integrace umožňuje připojení k SSCP protokolu pro PLC zařízení.
 
 ### Ruční instalace
 1. Stáhněte si [nejnovější vydání](https://github.com/cervenyxp/hass_sscp_integration/releases/latest).
-2. Rozbalte obsah do složky `custom_components/your_integration_name`.
+2. Rozbalte obsah do složky `custom_components`.
+3. Do podsložky vlist nakopírujte vlist ze svého projektu od Mervis nebo Domat
+4. Začněte tvořit integraci a entity
+5. Dotazy na petr@sw-studio.cz
 
 ## Konfigurace
-Přidejte integraci
+Přidejte integraci a nastavte entity, ideálně z vlist souboru
