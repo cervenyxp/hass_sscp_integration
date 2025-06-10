@@ -21,3 +21,14 @@ Tato integrace umožňuje připojení k SSCP protokolu pro PLC zařízení.
 
 ## Konfigurace
 Přidejte integraci a nastavte entity, ideálně z vlist souboru
+
+## License
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Tento program je svobodný software: můžete jej šířit a/nebo upravovat
+podle podmínek GNU General Public License, jak byla zveřejněna
+Free Software Foundation, buď ve verzi 3 licence, nebo
+(podle vašeho uvážení) v jakékoli pozdější verzi.
