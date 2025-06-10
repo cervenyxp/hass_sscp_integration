@@ -1,6 +1,13 @@
 import logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+# jednotky již nejsou importovány z const, používáme stringy ve slovnících
 from . import DOMAIN
+from homeassistant.helpers import entity_registry as er
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from datetime import timedelta
+
+SCAN_INTERVAL = timedelta(seconds=5)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -14,10 +21,10 @@ UNIT_DEVICE_CLASS_MAP = {
     "m": SensorDeviceClass.DISTANCE,
     "cm": SensorDeviceClass.DISTANCE,
     "mm": SensorDeviceClass.DISTANCE,
-    "V": SensorDeviceClass.ENERGY,
-    "mV": SensorDeviceClass.ENERGY,
-    "A": SensorDeviceClass.ENERGY,
-    "mA": SensorDeviceClass.ENERGY,
+    "V": SensorDeviceClass.VOLTAGE,
+    "mV": SensorDeviceClass.VOLTAGE,
+    "A": SensorDeviceClass.CURRENT,
+    "mA": SensorDeviceClass.CURRENT,
     "Hz": SensorDeviceClass.FREQUENCY,
     "W": SensorDeviceClass.POWER,
     "kW": SensorDeviceClass.POWER,
@@ -46,25 +53,39 @@ UNIT_STATE_CLASS_MAP = {
 }
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Nastavení senzorů pro SSCP Integration."""
-    _LOGGER.info("Setting up sensors for SSCP Integration")
+    """Nastavení sensor entities pro SSCP Integration."""
+    _LOGGER.info("Setting up sensor entities for SSCP Integration")
 
-    client = hass.data[DOMAIN][config_entry.entry_id]
+    client = hass.data[DOMAIN][config_entry.entry_id]["client"]
+    # Zajisti seznam entit
+    if "entities" not in hass.data[DOMAIN][config_entry.entry_id]:
+        hass.data[DOMAIN][config_entry.entry_id]["entities"] = []
     variables = config_entry.data.get("variables", [])
 
     sensors = [
-        SSCPVariableSensor(client, variable, config_entry.entry_id)
+        SSCPVariableSensor(client, variable, config_entry.entry_id, hass)
         for variable in variables
         if variable.get("entity_type") == "sensor"
     ]
+    for ent in sensors:
+        hass.data[DOMAIN][config_entry.entry_id]["entities"].append(ent)
 
     if sensors:
         async_add_entities(sensors, update_before_add=True)
 
+
+async def async_unload_entry(hass, entry):
+    registry = er.async_get(hass)
+    er.async_clear_config_entry(registry, entry.entry_id)
+    # await async_unload_platforms(...)
+    return True
+
+
 class SSCPVariableSensor(SensorEntity):
     """Reprezentace SSCP senzoru."""
+    should_poll = True
 
-    def __init__(self, client, config, entry_id):
+    def __init__(self, client, config, entry_id,hass):
         """Inicializace senzoru."""
         self._client = client
         self._uid = config["uid"]
@@ -72,6 +93,7 @@ class SSCPVariableSensor(SensorEntity):
         self._length = config.get("length", 1)
         self._type = config["type"]
         self._entry_id = entry_id
+        self.hass = hass
 
         # Atributy nastavené dynamicky podle konfigurace
         self._attr_name = config["name"]

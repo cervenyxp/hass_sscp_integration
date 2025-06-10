@@ -1,0 +1,1 @@
+ATTR_UPDATED_AT = "updated_at"

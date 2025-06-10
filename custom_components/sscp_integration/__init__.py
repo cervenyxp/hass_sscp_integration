@@ -4,6 +4,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryNotReady
 from .sscp_client import SSCPClient
 
+
 DOMAIN = "sscp_integration"
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,8 +21,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         entry.data["sscp_address"],
         entry.data["PLC_Name"]
     )
+    # Uložení klienta i seznamu entit
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = client
+    hass.data[DOMAIN][entry.entry_id] = {
+        "client": client,
+        "entities": []
+    }
 
     # Připojení a přihlášení k SSCP serveru
     try:
@@ -33,9 +38,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         raise ConfigEntryNotReady from e
 
     # Předání konfigurace pro všechny entity
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number", "switch", "binary_sensor"])
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number", "switch", "binary_sensor", "select", "button", "light"])
+
+    entry.async_on_unload(
+        entry.add_update_listener(_async_update_listener)
+    )
 
     return True
+
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Odpojení a vyčištění při odstraňování integrace."""
@@ -56,6 +67,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     await hass.config_entries.async_forward_entry_unload(entry, "binary_sensor")
 
     return True
+
+async def _async_update_listener(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """Options se změnily – reload config_entry pro znovuvytvoření entit."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 async def async_reload_entry(hass, config_entry):
     """Znovu načte konfiguraci PLC."""

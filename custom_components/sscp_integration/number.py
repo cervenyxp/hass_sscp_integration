@@ -1,29 +1,48 @@
 import logging
 from homeassistant.components.number import NumberEntity, NumberMode
 from . import DOMAIN
+from homeassistant.helpers import entity_registry as er
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from datetime import timedelta
+
+SCAN_INTERVAL = timedelta(seconds=5)
 
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Nastavení číselných entit pro SSCP Integration."""
+    """Nastavení number entities pro SSCP Integration."""
     _LOGGER.info("Setting up number entities for SSCP Integration")
 
-    client = hass.data[DOMAIN][config_entry.entry_id]
+    client = hass.data[DOMAIN][config_entry.entry_id]["client"]
+    # Zajisti seznam entit
+    if "entities" not in hass.data[DOMAIN][config_entry.entry_id]:
+        hass.data[DOMAIN][config_entry.entry_id]["entities"] = []
     variables = config_entry.data.get("variables", [])
 
-    entities = [
-        SSCPNumber(client, variable, config_entry.entry_id)
+    numbers = [
+        SSCPNumber(client, variable, config_entry.entry_id, hass)
         for variable in variables
         if variable.get("entity_type") == "number"
     ]
+    for ent in numbers:
+        hass.data[DOMAIN][config_entry.entry_id]["entities"].append(ent)
 
-    if entities:
-        async_add_entities(entities, update_before_add=True)
+    if numbers:
+        async_add_entities(numbers, update_before_add=True)
+
+
+async def async_unload_entry(hass, entry):
+    registry = er.async_get(hass)
+    er.async_clear_config_entry(registry, entry.entry_id)
+    # await async_unload_platforms(...)
+    return True
 
 class SSCPNumber(NumberEntity):
     """Číselná entita pro SSCP Integration."""
+    should_poll = True
 
-    def __init__(self, client, config, entry_id):
+    def __init__(self, client, config, entry_id,hass):
         """Inicializace číselné entity."""
         self._client = client
         self._uid = config["uid"]
@@ -34,10 +53,11 @@ class SSCPNumber(NumberEntity):
         self._unit = config.get("unit_of_measurement", None)  # Přidáno: jednotka měření
         self._state = None
         self._entry_id = entry_id
+        self.hass = hass
 
         # Výchozí hodnoty
-        self._min_value = config.get("min_value", float("-inf"))
-        self._max_value = config.get("max_value", float("inf"))
+        self._min_value = config.get("min_value", float("-65535"))
+        self._max_value = config.get("max_value", float("65535"))
         self._step = config.get("step", 1)
         self._mode = config.get("mode", "box")  # Nastavení výchozího režimu jako "box"
 
@@ -110,6 +130,9 @@ class SSCPNumber(NumberEntity):
             )
             self._state = value
             self.async_write_ha_state()
+            for ent in self.hass.data[DOMAIN][self._entry_id]["entities"]:
+                if ent is not self:
+                    ent.async_schedule_update_ha_state(force_refresh=True)
             _LOGGER.info("Set number %s to value: %s", self._name, value)
         except Exception as e:
             _LOGGER.error("Failed to set value %s for number %s: %s", value, self._name, e)

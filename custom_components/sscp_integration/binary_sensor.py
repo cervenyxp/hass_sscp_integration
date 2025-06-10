@@ -1,6 +1,9 @@
 import logging
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from . import DOMAIN
+from datetime import timedelta
+
+SCAN_INTERVAL = timedelta(seconds=5)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -8,22 +11,29 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     """Nastavení binárních senzorů pro SSCP Integration."""
     _LOGGER.info("Setting up binary sensors for SSCP Integration")
 
-    client = hass.data[DOMAIN][config_entry.entry_id]
+    client = hass.data[DOMAIN][config_entry.entry_id]["client"]
+    # Zajisti sdílený seznam entit
+    if "entities" not in hass.data[DOMAIN][config_entry.entry_id]:
+        hass.data[DOMAIN][config_entry.entry_id]["entities"] = []
     variables = config_entry.data.get("variables", [])
 
     binary_sensors = [
-        SSCPBinarySensor(client, variable, config_entry.entry_id)
+        SSCPBinarySensor(client, variable, config_entry.entry_id, hass)
         for variable in variables
         if variable.get("entity_type") == "binary_sensor"
     ]
+    for ent in binary_sensors:
+        hass.data[DOMAIN][config_entry.entry_id]["entities"].append(ent)
 
     if binary_sensors:
         async_add_entities(binary_sensors, update_before_add=True)
 
+
 class SSCPBinarySensor(BinarySensorEntity):
     """Binární senzor pro SSCP."""
+    should_poll = True
 
-    def __init__(self, client, config, entry_id):
+    def __init__(self, client, config, entry_id, hass):
         """Inicializace binárního senzoru."""
         self._client = client
         self._uid = config["uid"]
@@ -33,6 +43,7 @@ class SSCPBinarySensor(BinarySensorEntity):
         self._name = config["name"]
         self._state = None
         self._entry_id = entry_id
+        self.hass = hass
 
     @property
     def name(self):
