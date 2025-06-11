@@ -18,11 +18,33 @@ import random
 
 def generate_code(length=5):
     return ''.join(random.choices('0123456789', k=length))
+
+# Mapování PLC typu na podporované entity
+PLC_TYPE_TO_ENTITIES = {
+    "BOOL": ["binary_sensor", "switch", "button", "light", "select"],
+    "BYTE": ["sensor", "number", "select"],
+    "WORD": ["sensor", "number", "select"],
+    "INT":  ["sensor", "number", "select"],
+    "UINT": ["sensor", "number", "select"],
+    "DINT": ["sensor", "number", "select"],
+    "UDINT":["sensor", "number", "select"],
+    "REAL": ["sensor", "number", "select"],
+    "LREAL":["sensor", "number", "select"],
+    # Další typy podle potřeby
+}
+
+ALL_ENTITY_TYPES = [
+    "sensor", "binary_sensor", "switch", "number", "select", "button", "light"
+]
     
 
 class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
-        self.vlist_data = {}        
+        self.vlist_data = {}
+        self.chosen_var = None
+        self.chosen_entity_type = None
+        self.chosen_type = None
+        self.temp_entity = {}
 
     async def async_step_user(self, user_input=None):
         errors = {}
@@ -81,13 +103,7 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_vlist_select(self, user_input=None):
         errors = {}
 
-        if user_input is not None:
-            selected_var = user_input["variable"]
-            var_data = self.vlist_data[selected_var]
-            self.config.update(var_data)
-            self.config["name"] = selected_var
-            return await self.async_step_hass_config()
-
+        # Pokud nemáme načtený vlist, načti jej do self.vlist_data
         if not self.vlist_data:
             try:
                 lines = await self.hass.async_add_executor_job(read_vlist_file, self.config["vlist_file"])
@@ -96,6 +112,7 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if len(parts) >= 6:
                         name = parts[1].replace("$", "")
                         self.vlist_data[name] = {
+                            "name": name,
                             "project": parts[0],
                             "uid": int(parts[3]),
                             "type": parts[2].strip('$'),
@@ -108,6 +125,19 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("Failed to load vlist file: %s", e)
                 errors["base"] = "vlist_load_failed"
 
+        # Pokud uživatel vybral proměnnou
+        if user_input is not None:
+            selected_name = user_input["variable"]
+            var_data = self.vlist_data[selected_name]
+
+            # Uložíme výběr pro další kroky
+            self.chosen_var = var_data
+            self.chosen_type = var_data["type"].upper() if "type" in var_data else None
+
+            # Pokračuj na krok pro výběr entity (jen povolené typy)
+            return await self.async_step_entity_type_select()
+
+        # Nabídka výběru proměnné z vlist
         variable_options = list(self.vlist_data.keys())
         if not variable_options:
             errors["base"] = "no_variables"
@@ -116,95 +146,168 @@ class SSCPConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required("variable"): vol.In(variable_options),
         })
 
-        return self.async_show_form(step_id="vlist_select", data_schema=data_schema, errors=errors)
+        return self.async_show_form(
+            step_id="vlist_select",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "info": "Vyber proměnnou, kterou chceš přidat do Home Assistant.",
+            },
+        )
 
     async def async_step_manual_input(self, user_input=None):
         errors = {}
 
         if user_input is not None:
-            self.config.update(user_input)
-            self.config["name"] = user_input["name"]
-            return await self.async_step_hass_config()
+            # Vše uložíme stejně jako by to bylo z vlist
+            self.chosen_var = {
+                "name": user_input["name"],
+                "uid": int(user_input["uid"]),
+                "offset": int(user_input.get("offset", 0)),
+                "length": int(user_input.get("length", 1)),
+                "type": user_input["type"].upper(),
+                # Další hodnoty lze přidat dle potřeby
+            }
+            self.chosen_type = user_input["type"].upper()
 
+            # Pokračujeme stejně jako z vlist – výběr typu entity podle PLC typu
+            return await self.async_step_entity_type_select()
+
+        # Formulář pro ruční zadání
         data_schema = vol.Schema({
-            vol.Required("comm_uid"): int,
-            vol.Required("offset", default=0): int,
-            vol.Required("length", default=1): int,
-            vol.Optional("name", default="Manual Entity"): str,
+            vol.Required("name", default="Ručně zadaná proměnná"): str,
+            vol.Required("uid"): int,
+            vol.Optional("offset", default=0): int,
+            vol.Optional("length", default=1): int,
+            vol.Required("type", default="INT"): vol.In([
+                "BOOL", "BYTE", "WORD", "INT", "UINT", "DINT", "UDINT", "REAL", "LREAL"
+            ]),
         })
 
-        return self.async_show_form(step_id="manual_input", data_schema=data_schema, errors=errors)
+        return self.async_show_form(
+            step_id="manual_input",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "info": "Zadej parametry proměnné, poté vyber typ entity."
+            },
+        )
 
-    async def async_step_hass_config(self, user_input=None):
-        errors = {}
-        known_units = ["°C", "°F", "K", "Pa", "kPa", "hPa", "bar", "psi", "m/s", "km/h", "mph", "W", "kW", "MW", "V", "mV", "A", "mA", "Hz", "kHz", "%", "g", "kg", "t", "m", "cm", "mm", "km", "l", "ml", "m³"]
+    async def async_step_entity_type_select(self, user_input=None):
+        if not self.chosen_type:
+            # failover, pokud by se typ nezjistil
+            return self.async_abort(reason="type_not_found")
+
+        allowed_entity_types = PLC_TYPE_TO_ENTITIES.get(self.chosen_type, ["sensor"])
+        schema = vol.Schema({
+            vol.Required("entity_type", default=allowed_entity_types[0]): vol.In(allowed_entity_types)
+        })
 
         if user_input is not None:
-            self.config.update(user_input)
-            try:
-                value = self.client.read_variable(
-                    self.config["uid"],
-                    self.config["offset"],
-                    self.config["length"],
-                    self.config["type"]
-                )
-                _LOGGER.info("Variable value read successfully: %s", value)
+            self.chosen_entity_type = user_input["entity_type"]
+            return await self.async_step_entity_detail_config()
 
+        return self.async_show_form(
+            step_id="entity_type_select",
+            data_schema=schema,
+            description_placeholders={"typ": self.chosen_type}
+        )
+
+    # 4. krok: Detailní nastavení podle typu entity
+    async def async_step_entity_detail_config(self, user_input=None):
+        # Připravujeme dynamické schéma podle zvoleného typu entity
+        fields = {}
+
+        # Název v HA
+        fields[vol.Required("name_ha", default=self.chosen_var["name"])] = str
+        # Název z vlist (readonly – uložíme, ale uživatel nemění)
+        fields[vol.Optional("name_vlist", default=self.chosen_var["name"])] = str
+        # Random kód (unikátní identifikátor)
+        fields[vol.Optional("random_code", default=generate_code())] = str
+
+        if self.chosen_entity_type == "number":
+            fields[vol.Optional("min_value", default=0.0)] = vol.Coerce(float)
+            fields[vol.Optional("max_value", default=100.0)] = vol.Coerce(float)
+            fields[vol.Optional("step", default=1.0)] = vol.Coerce(float)
+            fields[vol.Optional("mode", default="box")] = vol.In(["box", "slider"])
+
+        if self.chosen_entity_type == "select":
+            # Dynamické zadání dvojic: použijeme pole s fixním počtem, nebo ještě lépe – další krok, kde je opakovaně lze přidat/ubrat
+            for i in range(5):  # lze nahradit opakovaným krokem pro přidání další volby
+                fields[vol.Optional(f"select_key_{i}", default="")] = str
+                fields[vol.Optional(f"select_label_{i}", default="")] = str
+
+        if self.chosen_entity_type == "button":
+            fields[vol.Optional("press_time", default=0.1)] = float  # v sekundách
+
+        # Pro každý typ ještě volitelné jednotky (sensor, number)
+        if self.chosen_entity_type in ["sensor", "number"]:
+            known_units = ["°C", "°F", "K", "Pa", "kPa", "bar", "V", "A", "W", "%", "Hz", "s", "m", "kg"]
+            fields[vol.Optional("unit_of_measurement", default="")] = vol.In(known_units + [""])
+
+        if user_input is not None:
+            # Ulož vše potřebné do self.temp_entity a připrav zápis do configu
+            self.temp_entity = {
+                "uid": self.chosen_var["uid"],
+                "offset": self.chosen_var["offset"],
+                "length": self.chosen_var["length"],
+                "type": self.chosen_type,
+                "entity_type": self.chosen_entity_type,
+                "name": user_input["name_ha"],
+                "name_vlist": self.chosen_var["name"],
+                "random_code": user_input.get("random_code"),
+            }
+            # Doplň parametry pro typy
+            if self.chosen_entity_type == "number":
+                self.temp_entity["min_value"] = user_input.get("min_value")
+                self.temp_entity["max_value"] = user_input.get("max_value")
+                self.temp_entity["step"] = user_input.get("step")
+                self.temp_entity["mode"] = user_input.get("mode", "box")
+                if user_input.get("unit_of_measurement"):
+                    self.temp_entity["unit_of_measurement"] = user_input.get("unit_of_measurement")
+
+            if self.chosen_entity_type == "select":
+                options_map = {}
+                for i in range(5):
+                    key = user_input.get(f"select_key_{i}")
+                    label = user_input.get(f"select_label_{i}")
+                    if key and label:
+                        options_map[key.strip()] = label.strip()
+                self.temp_entity["select_options"] = options_map
+
+            if self.chosen_entity_type == "button":
+                self.temp_entity["press_time"] = user_input.get("press_time")
+
+            # Přidat entity do configu, pokračovat/přidat další nebo dokončit
+            return await self.async_step_confirm_or_next()
+
+        return self.async_show_form(
+            step_id="entity_detail_config",
+            data_schema=vol.Schema(fields)
+        )
+
+    # 5. krok: Potvrzení, přidat další nebo ukončit
+    async def async_step_confirm_or_next(self, user_input=None):
+        if user_input is not None:
+            if user_input.get("finish", False):
+                # Dokonči – uložit entry s celým configem
                 if "variables" not in self.config:
                     self.config["variables"] = []
+                self.config["variables"].append(self.temp_entity)
+                return self.async_create_entry(title=self.config["PLC_Name"], data=self.config)
+            else:
+                # Přidat další entitu (vrátit se na výběr proměnné)
+                if "variables" not in self.config:
+                    self.config["variables"] = []
+                self.config["variables"].append(self.temp_entity)
+                return await self.async_step_vlist_select()
+        # Nabídka: "Přidat další entitu?" nebo "Dokončit"
+        schema = vol.Schema({
+            vol.Optional("finish", default=False): bool
+        })
+        return self.async_show_form(step_id="confirm_or_next", data_schema=schema)
 
-                variable = {
-                    "uid": self.config["uid"],
-                    "offset": self.config["offset"],
-                    "length": self.config["length"],
-                    "type": self.config["type"],
-                    "name": self.config["name"],
-                    "entity_type": user_input["entity_type"],
-                }
-
-                if user_input["entity_type"] not in ["switch", "binary_sensor", "button", "light"]:
-                    variable["unit_of_measurement"] = user_input.get("unit_of_measurement")
-
-                if user_input["entity_type"] == "select":
-                    options_map = {}
-                    for i in range(5):
-                        key = user_input.get(f"select_key_{i}")
-                        label = user_input.get(f"select_label_{i}")
-                        if key and label:
-                            options_map[key.strip()] = label.strip()
-                    variable["select_options"] = options_map
-
-                self.config["variables"].append(variable)
-
-                if user_input.get("finish", False):
-                    return self.async_create_entry(title=self.config["PLC_Name"], data=self.config)
-                else:
-                    if self.config.get("configuration_mode") == "vlist":
-                        return await self.async_step_vlist_select()
-                    else:
-                        return await self.async_step_manual_input()
-            except Exception as e:
-                _LOGGER.error("Failed to read variable: %s", e)
-                errors["base"] = "read_failed"
-
-        data_dict = {
-            vol.Required("entity_type", default="sensor"): vol.In(["sensor", "binary_sensor", "switch", "number", "select", "button", "light"]),
-            vol.Required("domain", default="generic"): str,
-        }
-
-        if user_input is None or user_input.get("entity_type", "sensor") not in ["switch", "binary_sensor", "button", "light"]:
-            data_dict[vol.Optional("unit_of_measurement", default="°C")] = vol.In(known_units)
-
-        if user_input is None or user_input.get("entity_type", "sensor") == "select":
-            for i in range(5):
-                data_dict[vol.Optional(f"select_key_{i}", default="")] = str
-                data_dict[vol.Optional(f"select_label_{i}", default="")] = str
-
-        data_dict[vol.Optional("finish", default=False)] = bool
-
-        data_schema = vol.Schema(data_dict)
-
-        return self.async_show_form(step_id="hass_config", data_schema=data_schema, errors=errors)
+    # ... případně další kroky (ruční zadání, apod.) ...
 
     @staticmethod
     @callback
@@ -247,32 +350,24 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=data_schema)
 
     async def async_step_manage_entities(self, user_input=None):
-        if user_input is not None:
-            # najdeme tuple (index, entity) podle vybrané položky
-            selected_name = user_input.get("entity")
-            try:
-                idx, ent = next(
-                    (i, var)
-                    for i, var in enumerate(self.current_variables)
-                    if f"{var['name']} (UID: {var['uid']})" == selected_name
-                )
-            except StopIteration:
-                return self.async_abort(reason="entity_not_found")
-            self.selected_entity = (idx, ent)
-
-            if user_input["action"] == "edit_entity":
-                return await self.async_step_edit_entity()
-            if user_input["action"] == "delete_entity":
-                return await self.async_step_confirm_delete_entity()
-            if user_input["action"] == "save_and_reload":
-                await self._update_config_entry(self.current_variables)
-                return self.async_create_entry(title="Uloženo", data={})
+        # Výpis všech entit s random_code pro rozlišení vícenásobného použití
         entities = [
-            f"{entity['name']} (UID: {entity['uid']})"
-            for entity in self.config_entry.data.get("variables", [])
+            f"{entity['name']} (UID: {entity['uid']}, RANDOM: {entity.get('random_code', '')})"
+            for entity in self.current_variables
         ]
         if not entities:
             return self.async_abort(reason="no_entities")
+
+        if user_input is not None:
+            # Najdi index podle přesného stringu
+            selected_str = user_input.get("entity")
+            idx, ent = next(
+                (i, var)
+                for i, var in enumerate(self.current_variables)
+                if f"{var['name']} (UID: {var['uid']}, RANDOM: {var.get('random_code', '')})" == selected_str
+            )
+            self.selected_entity = (idx, ent)
+            return await self.async_step_edit_entity_type()
 
         data_schema = vol.Schema({
             vol.Required("entity"): vol.In(entities),
@@ -284,162 +379,122 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
         })
 
         return self.async_show_form(step_id="manage_entities", data_schema=data_schema)
+    
+    # Můžeš dát všechny entity (nebo omezit podle PLC typu, pokud budeš chtít)
 
 
-    async def async_step_hass_config(self, user_input=None):
-        errors = {}
-        known_units = ["°C", "°F", "K", "Pa", "kPa", "hPa", "bar", "psi", "m/s", "km/h", "mph", "W", "kW", "MW", "V", "mV", "A", "mA", "Hz", "kHz", "%", "g", "kg", "t", "m", "cm", "mm", "km", "l", "ml", "m³"]
+    async def async_step_edit_entity_type(self, user_input=None):
+        idx, entity = self.selected_entity
 
         if user_input is not None:
-            self.config.update(user_input)
-            try:
-                value = self.client.read_variable(
-                    self.config["uid"],
-                    self.config["offset"],
-                    self.config["length"],
-                    self.config["type"]
-                )
-                _LOGGER.info("Variable value read successfully: %s", value)
+            new_entity_type = user_input["entity_type"]
+            # Uložíme si nový typ (i kdyby byl stejný, stejně přejdeme na detailní nastavení)
+            self.temp_entity = {**entity, "entity_type": new_entity_type}
+            return await self.async_step_edit_entity_detail()
 
-                if "variables" not in self.config:
-                    self.config["variables"] = []
+        data_schema = vol.Schema({
+            vol.Required("entity_type", default=entity["entity_type"]): vol.In(ALL_ENTITY_TYPES)
+        })
+        return self.async_show_form(
+            step_id="edit_entity_type",
+            data_schema=data_schema,
+            description_placeholders={
+                "info": f"Změň typ entity ({entity['name']} – aktuálně {entity['entity_type']})"
+            }
+        )
+    async def async_step_edit_entity_detail(self, user_input=None):
+        idx, entity = self.selected_entity
+        ent = getattr(self, "temp_entity", entity)
+        entity_type = ent["entity_type"]
 
-                variable = {
-                    "uid": self.config["uid"],
-                    "offset": self.config["offset"],
-                    "length": self.config["length"],
-                    "type": self.config["type"],
-                    "name": self.config["name"],
-                    "entity_type": user_input["entity_type"],
-                }
-
-                if user_input["entity_type"] not in ["switch", "binary_sensor", "button", "light"]:
-                    variable["unit_of_measurement"] = user_input.get("unit_of_measurement")
-
-                if user_input["entity_type"] == "select":
-                    options_map = {}
-                    for i in range(5):
-                        key = user_input.get(f"select_key_{i}")
-                        label = user_input.get(f"select_label_{i}")
-                        if key and label:
-                            options_map[key.strip()] = label.strip()
-                    variable["select_options"] = options_map
-
-                self.config["variables"].append(variable)
-
-                if user_input.get("finish", False):
-                    return self.async_create_entry(title=self.config["PLC_Name"], data=self.config)
-                else:
-                    if self.config.get("configuration_mode") == "vlist":
-                        return await self.async_step_vlist_select()
-                    else:
-                        return await self.async_step_manual_input()
-            except Exception as e:
-                _LOGGER.error("Failed to read variable: %s", e)
-                errors["base"] = "read_failed"
-
-        data_dict = {
-            vol.Required("entity_type", default="sensor"): vol.In(["sensor", "binary_sensor", "switch", "number", "select", "button", "light"]),
-            vol.Required("domain", default="generic"): str,
+        # Dynamicky vytvoř schéma pro daný typ entity
+        fields = {
+            vol.Required("name", default=ent.get("name", "")): str,
+            vol.Optional("random_code", default=ent.get("random_code", "")): str,
         }
 
-        if user_input is None or user_input.get("entity_type", "sensor") not in ["switch", "binary_sensor", "button", "light"]:
-            data_dict[vol.Optional("unit_of_measurement", default="°C")] = vol.In(known_units)
+        if entity_type == "number":
+            fields[vol.Optional("min_value", default=ent.get("min_value", 0.0))] = vol.Coerce(float)
+            fields[vol.Optional("max_value", default=ent.get("max_value", 100.0))] = vol.Coerce(float)
+            fields[vol.Optional("step", default=ent.get("step", 1.0))] = vol.Coerce(float)
+            fields[vol.Optional("unit_of_measurement", default=ent.get("unit_of_measurement", ""))] = str
+            fields[vol.Optional("mode", default=ent.get("mode", "box"))] = vol.In(["box", "slider"])
 
-        if user_input is None or user_input.get("entity_type", "sensor") == "select":
+        elif entity_type == "select":
+            # Pokud chceš podporovat nekonečné možnosti, můžeš udělat vícekrokový flow – zde pro jednoduchost 5 položek:
+            select_options = ent.get("select_options", {})
             for i in range(5):
-                data_dict[vol.Optional(f"select_key_{i}", default="")] = str
-                data_dict[vol.Optional(f"select_label_{i}", default="")] = str
+                key = list(select_options.keys())[i] if i < len(select_options) else ""
+                label = list(select_options.values())[i] if i < len(select_options) else ""
+                fields[vol.Optional(f"select_key_{i}", default=key)] = str
+                fields[vol.Optional(f"select_label_{i}", default=label)] = str
 
-        data_dict[vol.Optional("finish", default=False)] = bool
+        elif entity_type == "button":
+            fields[vol.Optional("press_time", default=ent.get("press_time", 0.1))] = vol.Coerce(float)
 
-        data_schema = vol.Schema(data_dict)
+        elif entity_type in ("sensor", "switch", "binary_sensor", "light"):
+            fields[vol.Optional("unit_of_measurement", default=ent.get("unit_of_measurement", ""))] = str
 
-        return self.async_show_form(step_id="hass_config", data_schema=data_schema, errors=errors)
+        # ... případně další pole pro jiné typy
 
-    async def async_step_edit_entity(self, user_input=None):
-        idx, entity = self.selected_entity
-        variables = self.current_variables
-
-        # Předvyplníme formulář
-        data_schema = vol.Schema({
-            vol.Required("name", default=entity["name"]): str,
-            vol.Required("uid", default=entity["uid"]): int,
-            vol.Required("offset", default=entity["offset"]): int,
-            vol.Required("length", default=entity["length"]): int,
-            vol.Required("type", default=entity["type"]): str,
-            vol.Required("entity_type", default=entity["entity_type"]): vol.In(["sensor", "binary_sensor", "switch", "number", "select", "button", "light"]),
-            vol.Optional("unit_of_measurement", default=entity.get("unit_of_measurement", "")): str,
-            vol.Required("action", default="save_and_exit"): vol.In({
-                "save": "Uložit a zpět",
-                "save_and_exit": "Uložit a ukončit",
-                "cancel": "Zrušit"
-            }),
+        # Akce (uložit/zpět)
+        fields[vol.Required("action", default="save_and_exit")]= vol.In({
+            "save": "Uložit a zpět",
+            "save_and_exit": "Uložit a ukončit",
+            "cancel": "Zrušit"
         })
 
-        if entity.get("entity_type") == "select":
-            existing = entity.get("select_options", {})
-            for i, (key, val) in enumerate(list(existing.items())[:5]):
-                data_schema = data_schema.extend({
-                    vol.Optional(f"select_key_{i}", default=key): str,
-                    vol.Optional(f"select_label_{i}", default=val): str
-                })
-            for i in range(len(existing), 5):
-                data_schema = data_schema.extend({
-                    vol.Optional(f"select_key_{i}"): str,
-                    vol.Optional(f"select_label_{i}"): str
-                })
-
         if user_input is not None:
-            if user_input.get("action") == "cancel":
+            action = user_input["action"]
+            if action == "cancel":
                 return await self.async_step_manage_entities()
 
-            # 1) Smazat původní entitu
-            old_variable = variables.pop(idx)
-
-            # 2) Vytvořit novou entitu s novými hodnotami (pokud měníš UID, vždy nový kód!)
+            # Sestav novou proměnnou dle aktuálního typu
             new_variable = {
+                **ent,  # Základ z původní entity
                 "name": user_input["name"],
-                "uid": user_input["uid"],
-                "offset": user_input["offset"],
-                "length": user_input["length"],
-                "type": user_input["type"],
-                "entity_type": user_input["entity_type"],
-                "unit_of_measurement": user_input.get("unit_of_measurement", ""),
+                "entity_type": entity_type,
+                "random_code": user_input.get("random_code", ""),
             }
+            if entity_type == "number":
+                new_variable["min_value"] = user_input.get("min_value")
+                new_variable["max_value"] = user_input.get("max_value")
+                new_variable["step"] = user_input.get("step")
+                new_variable["mode"] = user_input.get("mode", "box")
+                new_variable["unit_of_measurement"] = user_input.get("unit_of_measurement", "")
 
-            # zachovej původní random_code pokud UID nezměnil, jinak vygeneruj nový
-            if user_input["uid"] == old_variable["uid"] and "random_code" in old_variable:
-                new_variable["random_code"] = old_variable["random_code"]
-            else:
-                new_variable["random_code"] = generate_code()
 
-            # Pokud je typ select, přidej volby
-            if user_input["entity_type"] == "select":
+            elif entity_type == "select":
                 select_options = {}
-                for i in range(0, 5):
+                for i in range(5):
                     key = user_input.get(f"select_key_{i}")
                     label = user_input.get(f"select_label_{i}")
                     if key and label:
                         select_options[str(key).strip()] = label.strip()
                 new_variable["select_options"] = select_options
 
-            # 3) Přidat novou entitu
-            variables.append(new_variable)
+            elif entity_type == "button":
+                new_variable["press_time"] = user_input.get("press_time", 0.1)
 
-            # 4) Uložit a reloadnout
-            await self._update_config_entry(variables)
-            if user_input["action"] == "save_and_exit":
+            elif entity_type in ("sensor", "switch", "binary_sensor", "light"):
+                new_variable["unit_of_measurement"] = user_input.get("unit_of_measurement", "")
+
+            # Přepiš starou entitu novou, zachovej index!
+            self.current_variables[idx] = new_variable
+            await self._update_config_entry(self.current_variables)
+            if action == "save_and_exit":
                 return self.async_create_entry(title="", data={})
             else:
                 return await self.async_step_manage_entities()
 
-        return self.async_show_form(step_id="edit_entity", data_schema=data_schema)
+        return self.async_show_form(
+            step_id="edit_entity_detail",
+            data_schema=vol.Schema(fields)
+        )
 
     async def async_step_confirm_delete_entity(self, user_input=None):
         """Potvrdit smazání entity – jen aktualizujeme entry.data a ukončíme Flow."""
         if user_input is None:
-            # zobrazíme potvrzovací formulář
             index, entity = self.selected_entity
             return self.async_show_form(
                 step_id="confirm_delete_entity",
@@ -448,12 +503,26 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
             )
 
         if user_input.get("confirm"):
-            index, _ = self.selected_entity
-            self.current_variables.pop(index)
-            new_data = {**self.config_entry.data, "variables": self.current_variables}
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-        return self.async_create_entry(title="", data={})
+            index, entity = self.selected_entity
+            # Najdi entitu podle UID a random_code (pro jistotu)
+            remove_idx = None
+            for idx, var in enumerate(self.current_variables):
+                if (
+                    var.get("uid") == entity.get("uid")
+                    and var.get("random_code", "") == entity.get("random_code", "")
+                    and var.get("name") == entity.get("name")
+                ):
+                    remove_idx = idx
+                    break
 
+            if remove_idx is not None:
+                self.current_variables.pop(remove_idx)
+                new_data = {**self.config_entry.data, "variables": self.current_variables}
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            else:
+                _LOGGER.warning(f"Nepodařilo se najít entitu k odstranění: {entity}")
+
+        return self.async_create_entry(title="", data={})
 
     async def reload_from_vlist(self):
         vlist_file = self.config_entry.data.get("vlist_file")
@@ -463,27 +532,45 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
 
         try:
             with open(vlist_file, "r") as f:
-                lines = f.readlines()[2:]
-                new_data = {}
+                lines = f.readlines()[2:]  # přeskoč hlavičku
+                vlist_map = {}
                 for line in lines:
                     parts = line.strip().split(";")
                     if len(parts) >= 6:
                         name = parts[1].replace("$", "")
-                        new_data[name] = {
+                        vlist_map[name] = {
                             "uid": int(parts[3]),
                             "offset": int(parts[4]) if parts[4] else 0,
                             "length": int(parts[5]) if parts[5] else 1,
-                            "type": parts[2].strip('$'),
                         }
+
+                # projdi aktuální konfiguraci a podle name (přednostně name_vlist, jinak name) zkontroluj změny
                 variables = self.config_entry.data.get("variables", [])
                 for entity in variables:
-                    if entity["name"] in new_data:
-                        entity.update(new_data[entity["name"]])
+                    # Nejprve podle name_vlist, pokud není tak podle name
+                    name_key = entity.get("name_vlist") or entity.get("name")
+                    if name_key in vlist_map:
+                        vlist_data = vlist_map[name_key]
+                        # Pokud se uid nebo offset změnil, přepiš
+                        updated = False
+                        if entity.get("uid") != vlist_data["uid"]:
+                            entity["uid"] = vlist_data["uid"]
+                            updated = True
+                        if entity.get("offset") != vlist_data["offset"]:
+                            entity["offset"] = vlist_data["offset"]
+                            updated = True
+                        if entity.get("length") != vlist_data["length"]:
+                            entity["length"] = vlist_data["length"]
+                            updated = True
+                        if updated:
+                            _LOGGER.info(f"Entity '{name_key}' byla aktualizována podle vlist: {vlist_data}")
+
                 await self._update_config_entry(variables)
         except Exception as e:
             _LOGGER.error("Failed to reload from .vlist: %s", e)
 
     async def async_step_add_entity_from_vlist(self, user_input=None):
+        # Načti vlist pokud není
         if not self.vlist_data:
             try:
                 vlist_file = self.config_entry.data.get("vlist_file")
@@ -495,6 +582,7 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
                     if len(parts) >= 6:
                         name = parts[1].replace("$", "")
                         self.vlist_data[name] = {
+                            "name": name,
                             "project": parts[0],
                             "uid": int(parts[3]),
                             "type": parts[2].strip('$'),
@@ -508,41 +596,92 @@ class SSCPOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             selected_var = user_input["variable"]
             var_data = self.vlist_data[selected_var]
-            var_data["name"] = selected_var
-            var_data["entity_type"] = user_input["entity_type"]
-            var_data["unit_of_measurement"] = user_input.get("unit_of_measurement", "")
-
-            if user_input["entity_type"] == "select":
-                select_options = {}
-                for i in range(0, 5):
-                    key = user_input.get(f"select_key_{i}")
-                    label = user_input.get(f"select_label_{i}")
-                    if key and label:
-                        select_options[str(key).strip()] = label.strip()
-                var_data["select_options"] = select_options
-
-            variables = self.config_entry.data.get("variables", []) + [var_data]
-            await self._update_config_entry(variables)
-            return self.async_create_entry(title="", data={})
+            # Ulož pro další kroky jako v config flow
+            self.chosen_var = var_data
+            self.chosen_type = var_data["type"].upper()
+            return await self.async_step_add_entity_type_select()
 
         variable_options = list(self.vlist_data.keys())
         if not variable_options:
             return self.async_abort(reason="no_variables")
 
-        # Základní pole
-        base_schema = {
-            vol.Required("variable"): vol.In(variable_options),
-            vol.Required("entity_type", default="sensor"):  vol.In(["sensor", "binary_sensor", "switch", "number", "select", "button", "light"]),
-            vol.Optional("unit_of_measurement", default=""): str,
+        data_schema = vol.Schema({
+            vol.Required("variable"): vol.In(variable_options)
+        })
+
+        return self.async_show_form(step_id="add_entity_from_vlist", data_schema=data_schema)
+    async def async_step_add_entity_type_select(self, user_input=None):
+        allowed_entity_types = PLC_TYPE_TO_ENTITIES.get(self.chosen_type, ["sensor"])
+        schema = vol.Schema({
+            vol.Required("entity_type", default=allowed_entity_types[0]): vol.In(allowed_entity_types)
+        })
+
+        if user_input is not None:
+            self.chosen_entity_type = user_input["entity_type"]
+            return await self.async_step_add_entity_detail()
+
+        return self.async_show_form(
+            step_id="add_entity_type_select",
+            data_schema=schema,
+            description_placeholders={"typ": self.chosen_type}
+        )
+
+    async def async_step_add_entity_detail(self, user_input=None):
+        fields = {
+            vol.Required("name", default=self.chosen_var["name"]): str,
+            vol.Optional("random_code", default=generate_code()): str,
         }
+        if self.chosen_entity_type == "number":
+            fields[vol.Optional("min_value", default=0.0)] = vol.Coerce(float)
+            fields[vol.Optional("max_value", default=100.0)] = vol.Coerce(float)
+            fields[vol.Optional("step", default=1.0)] = vol.Coerce(float)
+            fields[vol.Optional("mode", default="box")] = vol.In(["box", "slider"])
+            fields[vol.Optional("unit_of_measurement", default="")] = str
+        elif self.chosen_entity_type == "select":
+            for i in range(5):
+                fields[vol.Optional(f"select_key_{i}", default="")] = str
+                fields[vol.Optional(f"select_label_{i}", default="")] = str
+        elif self.chosen_entity_type == "button":
+            fields[vol.Optional("press_time", default=0.1)] = vol.Coerce(float)
+        elif self.chosen_entity_type in ("sensor", "switch", "binary_sensor", "light"):
+            fields[vol.Optional("unit_of_measurement", default="")] = str
 
-        # Přidáme pole pro select možnosti
-        for i in range(0, 5):
-            base_schema[vol.Optional(f"select_key_{i}")] = str
-            base_schema[vol.Optional(f"select_label_{i}")] = str
+        if user_input is not None:
+            # Sestav novou entitu pro přidání
+            new_variable = {
+                "uid": self.chosen_var["uid"],
+                "offset": self.chosen_var["offset"],
+                "length": self.chosen_var["length"],
+                "type": self.chosen_type,
+                "entity_type": self.chosen_entity_type,
+                "name": user_input["name"],
+                "random_code": user_input.get("random_code"),
+            }
+            if self.chosen_entity_type == "number":
+                new_variable["min_value"] = user_input.get("min_value")
+                new_variable["max_value"] = user_input.get("max_value")
+                new_variable["step"] = user_input.get("step")
+                new_variable["mode"] = user_input.get("mode", "box")
+                new_variable["unit_of_measurement"] = user_input.get("unit_of_measurement", "")
+            elif self.chosen_entity_type == "select":
+                select_options = {}
+                for i in range(5):
+                    key = user_input.get(f"select_key_{i}")
+                    label = user_input.get(f"select_label_{i}")
+                    if key and label:
+                        select_options[str(key).strip()] = label.strip()
+                new_variable["select_options"] = select_options
+            elif self.chosen_entity_type == "button":
+                new_variable["press_time"] = user_input.get("press_time", 0.1)
+            elif self.chosen_entity_type in ("sensor", "switch", "binary_sensor", "light"):
+                new_variable["unit_of_measurement"] = user_input.get("unit_of_measurement", "")
 
-        return self.async_show_form(step_id="add_entity_from_vlist", data_schema=vol.Schema(base_schema))
+            # Přidej do seznamu
+            variables = self.config_entry.data.get("variables", []) + [new_variable]
+            await self._update_config_entry(variables)
+            return self.async_create_entry(title="", data={})
 
+        return self.async_show_form(step_id="add_entity_detail", data_schema=vol.Schema(fields))
 
     async def _update_config_entry(self, variables):
         """Update config_entry data and remove deleted entities from registry."""

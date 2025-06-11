@@ -104,6 +104,9 @@ class SSCPNumber(NumberEntity):
     @property
     def mode(self):
         """Vrátí režim ovládání hodnoty."""
+        # Pokud je uložený režim v configu, použij jej – jinak box
+        if self._mode == "slider":
+            return NumberMode.SLIDER
         return NumberMode.BOX
 
     async def async_update(self):
