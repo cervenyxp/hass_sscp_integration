@@ -1,0 +1,57 @@
+refresh_runtime:
+  name: Refresh runtime diagnostics
+  description: Refresh diagnostics and state for one PLC entry or the first active entry using its selected communication backend.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional config entry ID of the PLC to refresh.
+      example: "abcd1234efgh5678"
+
+sync_time:
+  name: Sync PLC time
+  description: Synchronize PLC RTC with Home Assistant time using UTC or local mode. Available only for SSCP communication mode.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional config entry ID of the PLC to sync.
+      example: "abcd1234efgh5678"
+    mode:
+      name: Mode
+      description: Whether to write UTC or local time to the PLC.
+      example: "utc"
+      selector:
+        select:
+          options:
+            - "utc"
+            - "local"
+
+set_plc_time:
+  name: Set PLC time
+  description: Write a specific UTC or local timestamp to the PLC RTC. Available only for SSCP communication mode.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional config entry ID of the PLC to update.
+      example: "abcd1234efgh5678"
+    value:
+      name: Time value
+      description: ISO datetime string to write to the PLC, for example 2026-03-15T14:30.
+      example: "2026-03-15T14:30"
+    mode:
+      name: Mode
+      description: Whether the provided time should be interpreted as UTC or local PLC time.
+      example: "local"
+      selector:
+        select:
+          options:
+            - "utc"
+            - "local"
+
+reload_from_vlist:
+  name: Reload metadata from vlist
+  description: Re-resolve configured variables against the selected vlist file and reload the integration.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional config entry ID of the PLC to reload.
+      example: "abcd1234efgh5678"

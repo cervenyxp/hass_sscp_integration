@@ -1,126 +1,62 @@
-import logging
-from homeassistant.components.select import SelectEntity
-from . import DOMAIN
-from homeassistant.helpers import entity_registry as er
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from datetime import timedelta
+from __future__ import annotations
 
-SCAN_INTERVAL = timedelta(seconds=5)
+import logging
+
+from homeassistant.components.select import SelectEntity
+
+from .const import DOMAIN
+from .entity import SSCPBaseEntity
 
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Nastavení select entities pro SSCP Integration."""
-    _LOGGER.info("Setting up select entities for SSCP Integration")
 
+async def async_setup_entry(hass, config_entry, async_add_entities):
     client = hass.data[DOMAIN][config_entry.entry_id]["client"]
-    # Zajisti seznam entit
-    if "entities" not in hass.data[DOMAIN][config_entry.entry_id]:
-        hass.data[DOMAIN][config_entry.entry_id]["entities"] = []
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     variables = config_entry.data.get("variables", [])
 
     selects = [
-        SSCPSelectEntity(client, variable, config_entry.entry_id, hass)
+        SSCPSelectEntity(coordinator, client, variable, config_entry.entry_id, hass)
         for variable in variables
         if variable.get("entity_type") == "select"
     ]
-    for ent in selects:
-        hass.data[DOMAIN][config_entry.entry_id]["entities"].append(ent)
-
     if selects:
-        async_add_entities(selects, update_before_add=True)
-
-async def async_unload_entry(hass, entry):
-    registry = er.async_get(hass)
-    er.async_clear_config_entry(registry, entry.entry_id)
-    # await async_unload_platforms(...)
-    return True
+        async_add_entities(selects)
 
 
-class SSCPSelectEntity(SelectEntity):
-    """Select entita pro SSCP Integration."""
-    should_poll = True
-
-    def __init__(self, client, config, entry_id,hass):
-        """Inicializace select entity."""
-        self._client = client
-        self._uid = config["uid"]
-        self._offset = config.get("offset", 0)
-        self._length = config.get("length", 1)
-        self._type = config["type"]
-        self._entry_id = entry_id
-        self.hass = hass
-
+class SSCPSelectEntity(SSCPBaseEntity, SelectEntity):
+    def __init__(self, coordinator, client, config, entry_id, hass):
+        super().__init__(coordinator, client, config, entry_id, hass)
         self._attr_name = config["name"]
         self._attr_unique_id = f"{entry_id}_{self._uid}_{self._offset}_select"
-        self._attr_options = list(config.get("select_options", {}).values())
-        self._value_map = config.get("select_options", {})  # key: "0", value: "Vypnuto"
-        self._reverse_map = {v: k for k, v in self._value_map.items()}
-        self._state = None
+        self._value_map = config.get("select_options", {})
+        self._reverse_map = {label: key for key, label in self._value_map.items()}
+        self._attr_options = list(self._value_map.values())
 
     @property
     def current_option(self):
-        """Vrátí aktuální volbu."""
-        return self._value_map.get(str(self._state))
-
-    @property
-    def device_info(self):
-        """Vrátí informace o zařízení."""
-        return {
-            "identifiers": {(DOMAIN, self._entry_id)},
-            "name": f"PLC {self._entry_id}",
-            "manufacturer": "SSCP",
-            "model": "PLC Select",
-        }
-
-    async def async_update(self):
-        """Aktualizuje aktuální hodnotu."""
-        _LOGGER.debug("Updating select %s (UID: %s, Offset: %d)", self._attr_name, self._uid, self._offset)
-        try:
-            value = self._client.read_variable(self._uid, self._offset, self._length, self._type)
-            str_value = str(int(value)) if isinstance(value, (bool, int)) else str(value)
-
-            if str_value in self._value_map:
-                self._state = str_value
-                _LOGGER.info("Updated select %s to option: %s (%s)", self._attr_name, self._value_map[str_value], str_value)
-            else:
-                self._state = None
-                _LOGGER.warning("Received unknown value '%s' for select %s", str_value, self._attr_name)
-        except Exception as e:
-            _LOGGER.error("Failed to update select %s: %s", self._attr_name, e)
-            self._state = None
+        value = self.current_value
+        if value is None:
+            return None
+        key = str(int(value)) if isinstance(value, (bool, int)) else str(value)
+        return self._value_map.get(key)
 
     async def async_select_option(self, option):
-        """Nastaví vybranou možnost."""
         raw_value = self._reverse_map.get(option)
         if raw_value is None:
-            _LOGGER.error("Option '%s' not valid for select %s", option, self._attr_name)
+            _LOGGER.error("Option '%s' not valid for select %s", option, self.name)
             return
 
-        # 🛠 Převod hodnoty podle typu
         try:
             if self._type.upper() == "BOOL":
                 converted_value = bool(int(raw_value))
-            elif self._type.upper() in ["BYTE", "WORD", "UINT", "DINT", "UDINT", "LINT", "INT"]:
+            elif self._type.upper() in {"BYTE", "WORD", "UINT", "DINT", "UDINT", "LINT", "INT"}:
                 converted_value = int(raw_value)
-            elif self._type.upper() in ["REAL", "LREAL"]:
+            elif self._type.upper() in {"REAL", "LREAL"}:
                 converted_value = float(raw_value)
             else:
-                converted_value = raw_value  # fallback
+                converted_value = raw_value
 
-            self._client.write_variable(
-                self._uid,
-                value=converted_value,
-                offset=self._offset,
-                length=self._length,
-                type_data=self._type,
-            )
-            self._state = str(raw_value)
-            self.async_write_ha_state()
-            for ent in self.hass.data[DOMAIN][self._entry_id]["entities"]:
-                if ent is not self:
-                    ent.async_schedule_update_ha_state(force_refresh=True)
-            _LOGGER.info("Set select %s to option: %s (%s)", self._attr_name, option, converted_value)
-        except Exception as e:
-            _LOGGER.error("Failed to set option %s for select %s: %s", option, self._attr_name, e)
+            await self.async_write_sscp_value(converted_value)
+        except Exception as err:
+            _LOGGER.error("Failed to set option %s for select %s: %s", option, self.name, err)

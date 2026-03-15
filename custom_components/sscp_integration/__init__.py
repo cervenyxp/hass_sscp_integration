@@ -1,80 +1,118 @@
+from __future__ import annotations
+
 import logging
-from homeassistant.core import HomeAssistant
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.exceptions import ConfigEntryNotReady
-from .sscp_client import SSCPClient
+from homeassistant.core import HomeAssistant
 
+from .const import DOMAIN, PLATFORMS
+from .coordinator import SSCPDataCoordinator, SSCPDiagnosticsCoordinator
+from .migration import ENTRY_MINOR_VERSION, ENTRY_VERSION, async_migrate_entry_data
+from .transport import build_client_from_entry_data, has_connection_settings
 
-DOMAIN = "sscp_integration"
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Nastavení integrace na základě konfigurace."""
-    _LOGGER.info("Setting up SSCP Integration for %s", entry.data["host"])
 
-    # Inicializace SSCP klienta
-    client = SSCPClient(
-        entry.data["host"],
-        entry.data["port"],
-        entry.data["username"],
-        entry.data["password"],
-        entry.data["sscp_address"],
-        entry.data["PLC_Name"]
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    current_minor = getattr(entry, "minor_version", 0)
+    if entry.version > ENTRY_VERSION:
+        _LOGGER.error(
+            "Cannot migrate SSCP entry %s from newer version %s.%s",
+            entry.entry_id,
+            entry.version,
+            current_minor,
+        )
+        return False
+
+    if entry.version == ENTRY_VERSION and current_minor >= ENTRY_MINOR_VERSION:
+        return True
+
+    _LOGGER.info(
+        "Migrating SSCP entry %s from version %s.%s to %s.%s",
+        entry.entry_id,
+        entry.version,
+        current_minor,
+        ENTRY_VERSION,
+        ENTRY_MINOR_VERSION,
     )
-    # Uložení klienta i seznamu entit
+
+    try:
+        migrated_data = await async_migrate_entry_data(hass, dict(entry.data))
+    except Exception:
+        _LOGGER.exception("SSCP entry migration failed for %s", entry.entry_id)
+        return False
+
+    hass.config_entries.async_update_entry(
+        entry,
+        title=entry.title or migrated_data.get("PLC_Name", "PLC"),
+        data=migrated_data,
+        version=ENTRY_VERSION,
+        minor_version=ENTRY_MINOR_VERSION,
+    )
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    from .frontend import async_setup_frontend
+    from .http import async_register_http_views
+    from .runtime import SSCPRuntime
+    from .services import async_register_services
+
+    client = None
+    coordinator: SSCPDataCoordinator | None = None
+    diagnostics_coordinator: SSCPDiagnosticsCoordinator | None = None
+    startup_error: str | None = None
+
+    if has_connection_settings(entry.data):
+        client = build_client_from_entry_data(entry.data)
+        try:
+            await hass.async_add_executor_job(client.connect)
+            await hass.async_add_executor_job(client.login)
+            coordinator = SSCPDataCoordinator(hass, entry, client)
+            await coordinator.async_config_entry_first_refresh()
+            diagnostics_coordinator = SSCPDiagnosticsCoordinator(hass, entry, client, coordinator)
+            await diagnostics_coordinator.async_config_entry_first_refresh()
+        except Exception as exc:
+            _LOGGER.error("PLC entry %s is loaded in offline mode: %s", entry.title or entry.entry_id, exc)
+            if client is not None:
+                await hass.async_add_executor_job(client.disconnect)
+            startup_error = str(exc)
+            client = None
+            coordinator = None
+            diagnostics_coordinator = None
+
+    runtime = SSCPRuntime(hass, entry, client)
+    await runtime.async_initialize()
+    if startup_error:
+        runtime.last_error = startup_error
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "client": client,
-        "entities": []
+        "runtime": runtime,
+        "coordinator": coordinator,
+        "diagnostics_coordinator": diagnostics_coordinator,
+        "entry": entry,
     }
 
-    # Připojení a přihlášení k SSCP serveru
-    try:
-        client.connect()
-        client.login()
-        _LOGGER.info("Connected and logged in to SSCP server.")
-    except Exception as e:
-        _LOGGER.error("Failed to connect/login to SSCP server: %s", e)
-        raise ConfigEntryNotReady from e
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
-    # Předání konfigurace pro všechny entity
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "number", "switch", "binary_sensor", "select", "button", "light"])
-
-    entry.async_on_unload(
-        entry.add_update_listener(_async_update_listener)
-    )
-
+    await async_register_http_views(hass)
+    await async_register_services(hass)
+    await async_setup_frontend(hass, entry)
+    if client is not None:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    entry_data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    client = entry_data.get("client") if entry_data else None
+    if client is not None:
+        await hass.async_add_executor_job(client.disconnect)
+    return unload_ok
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Odpojení a vyčištění při odstraňování integrace."""
-    _LOGGER.info("Unloading SSCP Integration for %s", entry.data["host"])
 
-    client = hass.data[DOMAIN].pop(entry.entry_id, None)
-    if client:
-        try:
-            client.disconnect()
-            _LOGGER.info("Disconnected from SSCP server.")
-        except Exception as e:
-            _LOGGER.warning("Error during SSCP client disconnect: %s", e)
-
-    # Vyčistěte všechny typy entit
-    await hass.config_entries.async_forward_entry_unload(entry, "sensor")
-    await hass.config_entries.async_forward_entry_unload(entry, "number")
-    await hass.config_entries.async_forward_entry_unload(entry, "switch")
-    await hass.config_entries.async_forward_entry_unload(entry, "binary_sensor")
-
-    return True
-
-async def _async_update_listener(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> None:
-    """Options se změnily – reload config_entry pro znovuvytvoření entit."""
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
-
-async def async_reload_entry(hass, config_entry):
-    """Znovu načte konfiguraci PLC."""
-    await async_unload_entry(hass, config_entry)
-    await async_setup_entry(hass, config_entry)

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.log
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+%TEMP%/
+
+vlist_files/*
+!vlist_files/
+!vlist_files/example.vlist
